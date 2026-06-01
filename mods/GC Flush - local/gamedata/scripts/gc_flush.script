@@ -1,0 +1,44 @@
+-- gc_flush.script
+-- INSERT → force full Lua GC on demand
+-- Auto-flush every AUTO_INTERVAL_SEC seconds during play
+
+local KEY_GC           = DIK_keys.DIK_INSERT
+local AUTO_INTERVAL_SEC = 120
+local last_auto         = 0
+
+local function notify(msg)
+    if db.actor and news_manager then
+        news_manager.send_tip(db.actor, msg, nil, nil, 4000)
+    end
+end
+
+local function do_gc(silent)
+    local kb_before = collectgarbage("count")
+    collectgarbage("collect")
+    collectgarbage("collect")
+    collectgarbage("collect")
+    local kb_after = collectgarbage("count")
+    if not silent then
+        local freed = math.max(0, math.floor(kb_before - kb_after))
+        notify(string.format("GC flush: freed %d KB  |  heap now: %d KB", freed, math.floor(kb_after)))
+    end
+end
+
+local function on_key_press(key)
+    if key == KEY_GC then do_gc(false) end
+end
+
+local function on_update()
+    local t = time_global() / 1000
+    if (t - last_auto) >= AUTO_INTERVAL_SEC then
+        last_auto = t
+        do_gc(true)
+    end
+end
+
+local function on_game_start()
+    RegisterScriptCallback("on_key_press", on_key_press)
+    RegisterScriptCallback("actor_on_update", on_update)
+end
+
+RegisterScriptCallback("on_game_start", on_game_start)

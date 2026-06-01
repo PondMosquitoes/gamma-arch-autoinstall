@@ -1,0 +1,14 @@
+Anomaly/
+GAMMA/
+cache/
+pip-cache/
+gamma/
+gamma-launcher/
+settings-backup/
+launch_options.txt
+.perf_config
+.pfx_paths
+.install_done
+.gamma_install.log
+sessions/
+*.log
