@@ -38,4 +38,3 @@ cd ~/wherever
 - Run `perf.sh` manually before first play; it runs non-interactively on every subsequent Steam launch
 - `settings/` contains the author's settings — inject with `./settings-inject.sh`; skip if you prefer defaults
 - After `perf.sh` runs, paste `launch_options.txt` into Steam: right-click ModOrganizer.exe → Properties → Launch Options
-- git-lfs required: `sudo pacman -S git-lfs && git lfs install` before cloning
