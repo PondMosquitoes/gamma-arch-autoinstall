@@ -7,7 +7,7 @@ info()  { printf "\n${B}[*]${N} %s\n" "$*" >&2; }
 ok()    { printf "${G}[✓]${N} %s\n" "$*" >&2; }
 warn()  { printf "${Y}[!]${N} %s\n" "$*" >&2; }
 die()   { printf "${R}[✗]${N} %s\n" "$*" >&2; exit 1; }
-enter() { printf "${Y}[press Enter when done]${N} " >&2; read -r _; }
+enter() { printf "${Y}[press Enter when done]${N} " >&2; read -r _; printf '\n' >> "$LOG_FILE" 2>/dev/null || true; }
 
 # ── Directories ────────────────────────────────────────────────────────────────
 STALKER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,9 +16,37 @@ STALKER="${_tmp:-$STALKER}"
 [[ -d "$STALKER" ]] || die "Not a directory: $STALKER"
 cd "$STALKER"
 
+# ── Logging ────────────────────────────────────────────────────────────────────
+LOG_DIR="$STALKER/logs"
+mkdir -p "$LOG_DIR"
+_log_n=1
+while [[ -f "$LOG_DIR/log${_log_n}.txt" ]]; do (( _log_n++ )); done
+LOG_FILE="$LOG_DIR/log${_log_n}.txt"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ── Skip list ─────────────────────────────────────────────────────────────────
+# Edit logs/!skipped-mods.txt to control which mods are skipped during install.
+# One MO2 modlist folder name per line (e.g. "456- Mod Name - Author").
+# Remove a line if the mod's download URL is fixed upstream and you want it installed.
+_SKIP_FILE="$LOG_DIR/!skipped-mods.txt"
+_last_failed_mod=""
+
+if [[ ! -f "$_SKIP_FILE" ]]; then
+    cat > "$_SKIP_FILE" << 'SKIPEOF'
+# Mods skipped during gamma-launcher full-install.
+# One MO2 modlist folder name per line — e.g.: 456- Mod Name - Author
+# Remove a line if the mod's download URL is fixed upstream and you want it installed.
+# Skipped mods must be downloaded manually if you want them.
+#
+# Known broken (expired CDN signed URL, returns empty 7z stub instead of real archive):
+456- FDDA Redone Fixes - Kute
+SKIPEOF
+fi
+
 COMPAT="${COMPAT:-$HOME/.steam/steam/steamapps/compatdata}"
 [[ -d "$COMPAT" ]] || COMPAT="$HOME/.local/share/Steam/steamapps/compatdata"
 printf "Steam compatdata  [%s]: " "$COMPAT"; read -r _tmp
+printf '%s\n' "${_tmp:-}" >> "$LOG_FILE"
 COMPAT="${_tmp:-$COMPAT}"
 [[ -d "$COMPAT" ]] || die "compatdata not found: $COMPAT\n  Try: ~/.local/share/Steam/steamapps/compatdata"
 
@@ -63,6 +91,9 @@ TMPDIR="$STALKER/pip-cache" pip install -q --upgrade pip setuptools
 if ! gamma-launcher --version &>/dev/null 2>&1; then
     (cd gamma-launcher && TMPDIR="$STALKER/pip-cache" pip install -q .)
 fi
+
+_gl_venv=$(find "$STALKER/gamma/lib" -name "site-packages" -maxdepth 3 -type d 2>/dev/null | head -1)
+python3 "$STALKER/patch-gamma-launcher.py" "$STALKER/gamma-launcher" "${_gl_venv:-}" "$_SKIP_FILE"
 ok "gamma-launcher $(gamma-launcher --version 2>&1 | head -1)"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -171,7 +202,7 @@ elif _anomaly_ok && load_id "ID_MO2" >/dev/null 2>&1; then
     printf "  5) Restore settings\n"
     printf "  6) Exit\n"
     printf "\n"
-    printf "${Y}  Choice [1-6]:${N} "; read -r _choice
+    printf "${Y}  Choice [1-6]:${N} "; read -r _choice; printf '%s\n' "${_choice:-}" >> "$LOG_FILE"
 
     # ── Settings helpers ───────────────────────────────────────────────────────
     _BACKUP_DIR="$STALKER/.settings_backups"
@@ -268,17 +299,92 @@ fi
 _PROGRESS_LOG="$STALKER/.gamma_install.log"
 
 _on_install_fail() {
-    local last_n newest
+    local last_n newest newest_size
     last_n=$(grep -oP '\(\K[0-9]+(?=/[0-9]+\))' "$_PROGRESS_LOG" 2>/dev/null | tail -1 || true)
+
     if [[ -n "$last_n" && "$last_n" -gt 0 ]]; then
         warn "Failed at mod ${last_n} — removing partial download from cache."
         newest=$(find "$STALKER/cache" -maxdepth 1 -type f -printf '%T@ %p\n' 2>/dev/null \
                  | sort -n | tail -1 | cut -d' ' -f2-)
-        [[ -n "$newest" ]] && { warn "Removed: $(basename "$newest")"; rm -f "$newest"; }
+        if [[ -n "$newest" ]]; then
+            newest_size=$(stat -c%s "$newest" 2>/dev/null || echo 0)
+            warn "Removed: $(basename "$newest")"
+            rm -f "$newest"
+        fi
+
+        if [[ "$last_n" == "$_last_failed_mod" ]]; then
+            # Same mod failed twice — retrying is pointless, offer to skip it
+            local mod_title modlist_name
+            mod_title=$(grep -oP '\[\+\] Processing mod \K[^(]+' "$_PROGRESS_LOG" 2>/dev/null \
+                        | tail -1 | sed 's/[[:space:]]*$//')
+            local _mpack="$STALKER/GAMMA/.Grok's Modpack Installer/G.A.M.M.A/modpack_data"
+            if [[ -n "$mod_title" && -f "$_mpack/modlist.txt" ]]; then
+                modlist_name=$(grep -mF "$mod_title" "$_mpack/modlist.txt" 2>/dev/null \
+                               | sed 's/^[+-]//' | head -1)
+            fi
+
+            printf "\n"
+            printf "${R}╔══════════════════════════════════════════════════════╗${N}\n"
+            printf "${R}║  ERROR — Infinite Retry Detected                     ║${N}\n"
+            printf "${R}╚══════════════════════════════════════════════════════╝${N}\n"
+            printf "\n"
+            printf "  Mod:    %s\n" "${mod_title:-unknown (mod ${last_n})}"
+            printf "  Reason: The mod's download URL is broken — the CDN returns\n"
+            printf "          an empty archive stub instead of the actual file.\n"
+            printf "          Retrying will never succeed.\n"
+            printf "\n"
+            if [[ -n "$modlist_name" ]]; then
+                printf "  This mod can be skipped and added to the skip list:\n"
+                printf "    ${Y}%s${N}\n" "$_SKIP_FILE"
+                printf "  Skipped mods are NOT installed — download manually from\n"
+                printf "  ModDB later if you want them. Remove the entry from\n"
+                printf "  !skipped-mods.txt if the URL is ever fixed upstream.\n"
+            else
+                printf "  Could not resolve modlist name for '${mod_title}'.\n"
+                printf "  Add it manually to: ${Y}%s${N}\n" "$_SKIP_FILE"
+                printf "  Format: one MO2 folder name per line (e.g. 456- Mod - Author)\n"
+            fi
+            printf "\n"
+
+            if [[ -n "$modlist_name" ]]; then
+                printf "${Y}  Press Enter to skip '${modlist_name}' and retry.${N}\n"
+                printf "${Y}  Ctrl+C to abort.${N} "
+                read -r _ || true
+                printf '<Enter — skip prompt>\n' >> "$LOG_FILE"
+
+                printf "\n"
+                warn "Really skip '${modlist_name}'?"
+                warn "It will NOT be installed. Download manually from ModDB if you want it."
+                warn "Remove it from !skipped-mods.txt if the URL is fixed upstream."
+                printf "\n"
+                printf "${Y}  Press Enter again to confirm skip. Ctrl+C to abort.${N} "
+                read -r _ || true
+                printf '<Enter — confirmed skip>\n' >> "$LOG_FILE"
+
+                grep -qxF "$modlist_name" "$_SKIP_FILE" 2>/dev/null || \
+                    printf '%s\n' "$modlist_name" >> "$_SKIP_FILE"
+                ok "Skipped: ${modlist_name}"
+                ok "Entry written to: $_SKIP_FILE"
+
+                local _venv
+                _venv=$(find "$STALKER/gamma/lib" -name "site-packages" -maxdepth 3 -type d 2>/dev/null | head -1)
+                python3 "$STALKER/patch-gamma-launcher.py" \
+                    "$STALKER/gamma-launcher" "${_venv:-}" "$_SKIP_FILE"
+
+                _last_failed_mod=""
+                return
+            fi
+        fi
+
+        _last_failed_mod="$last_n"
     else
         warn "Install failed before any mods were downloaded."
+        _last_failed_mod=""
     fi
-    printf "${Y}[Enter to retry, Ctrl+C to abort]${N} " >&2; read -r _ || true
+
+    printf "${Y}[Enter to retry, Ctrl+C to abort]${N} " >&2
+    read -r _ || true
+    printf '<Enter — retry>\n' >> "$LOG_FILE"
 }
 
 if _anomaly_ok && [[ $_FORCE_INSTALL -eq 0 ]]; then

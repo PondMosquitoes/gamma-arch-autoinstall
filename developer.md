@@ -8,7 +8,7 @@ Read [methodology.md](methodology.md).
 
 Every prompt in `perf.sh` must be gated on `[[ -t 0 ]]` — the script runs non-interactively on every Steam launch and bare `read` calls will block it silently.
 
-Experiment in a scratch copy of `perf.sh`. Benchmark on Great Swamps — worst-case for CPU. One change at a time.
+Experiment in `perf-dev.sh` — a scratch copy of `perf.sh` kept out of the repo. Benchmark on Great Swamps — worst-case for CPU. One change at a time. When a change is confirmed good, promote it to `perf.sh` manually. Do NOT commit `perf-dev.sh`.
 
 The mt binaries are byte for byte identical to AOEngine. Apparently. GC & Heap is still the major issue.
 
